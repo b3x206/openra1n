@@ -12,11 +12,21 @@ else
 	LDFLAGS += -framework IOKit -framework CoreFoundation
 endif
 
+OBJCOPY = /opt/homebrew/opt/binutils/bin/gobjcopy
+
 .PHONY: all clean payloads openra1n
 
 all: payloads openra1n
 
 payloads:
+	@for file in payloadssrc/*; do \
+		echo " ASM	$$file"; \
+		xcrun -sdk iphoneos clang $$file -target arm64-apple-darwin -Wall -o $${file%.*}.o; \
+		echo " OBJCOPY $${file%.*}.o"; \
+		$(OBJCOPY) -O binary -j .text $${file%.*}.o $${file%.*}.bin; \
+		mv $${file%.*}.bin payloads/; \
+		rm $${file%.*}.o; \
+	done
 	@mkdir -p include/payloads
 	@for file in payloads/*; do \
 		echo " XXD    $$file"; \
