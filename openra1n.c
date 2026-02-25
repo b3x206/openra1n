@@ -20,6 +20,8 @@
 #	include <stdbool.h>
 #	include <string.h>
 #	include <stddef.h>
+// TODO : substitute for this in the macdonalds operating system
+#       include <assert.h>
 #else
 #	include <CommonCrypto/CommonCrypto.h>
 #	include <CoreFoundation/CoreFoundation.h>
@@ -84,8 +86,8 @@ typedef struct {
 	uint32_t sz;
 } transfer_ret_t;
 
-extern uint8_t payloads_yolo_s8000_bin[], payloads_yolo_s8001_bin[], payloads_yolo_s8003_bin[], payloads_yolo_t7000_bin[], payloads_yolo_t7001_bin[], payloads_yolo_t8010_bin[],  payloads_yolo_t8011_bin[], payloads_yolo_t8015_bin[];
-extern unsigned payloads_yolo_s8000_bin_len, payloads_yolo_s8001_bin_len, payloads_yolo_s8003_bin_len, payloads_yolo_t7000_bin_len, payloads_yolo_t7001_bin_len, payloads_yolo_t8010_bin_len, payloads_yolo_t8011_bin_len, payloads_yolo_t8015_bin_len;
+extern uint8_t payloads_yolo_s8000_bin[], payloads_yolo_s8001_bin[], payloads_yolo_s8003_bin[], payloads_yolo_t7000_bin[], payloads_yolo_t7001_bin[], payloads_yolo_t8010_bin[],  payloads_yolo_t8011_bin[], payloads_yolo_t8015_bin[], payloads_yolo_s5l8960_bin[];
+extern unsigned payloads_yolo_s8000_bin_len, payloads_yolo_s8001_bin_len, payloads_yolo_s8003_bin_len, payloads_yolo_t7000_bin_len, payloads_yolo_t7001_bin_len, payloads_yolo_t8010_bin_len, payloads_yolo_t8011_bin_len, payloads_yolo_t8015_bin_len, payloads_yolo_s5l8960_bin_len;
 
 extern uint8_t payloads_Pongo_bin[], payloads_shellcode_bin[];
 extern unsigned payloads_Pongo_bin_len, payloads_shellcode_bin_len;
@@ -98,6 +100,7 @@ extern unsigned payloads_Pongo_bin_len, payloads_shellcode_bin_len;
 #include <payloads/yolo_t8010.bin.h>
 #include <payloads/yolo_t8011.bin.h>
 #include <payloads/yolo_t8015.bin.h>
+#include <payloads/yolo_s5l8960.bin.h>
 
 #include <payloads/Pongo.bin.h>
 #include <payloads/shellcode.bin.h>
@@ -106,6 +109,8 @@ static uint16_t cpid;
 static uint32_t payload_dest_armv7;
 static const char *pwnd_str = " YOLO:checkra1n";
 static unsigned usb_timeout, usb_abort_timeout_min;
+static int reset_on_real_trigger = 0;
+static int real_trigger_timeout_ms = 0;
 static struct {
 	uint8_t b_len, b_descriptor_type;
 	uint16_t bcd_usb;
@@ -138,7 +143,11 @@ close_usb_handle(usb_handle_t *handle) {
 
 static void
 reset_usb_handle(const usb_handle_t *handle) {
-	libusb_reset_device(handle->device);
+	int result = libusb_reset_device(handle->device);
+
+	if (result) {
+		LOG_ERROR("libusb_reset_device returned non-zero %d", result);
+	}
 }
 
 static bool
@@ -863,7 +872,8 @@ checkm8_stage_patch(const usb_handle_t *handle) {
 	void* blank[DFU_MAX_TRANSFER_SZ];
 	memset(&blank, '\0', DFU_MAX_TRANSFER_SZ);
 	uint64_t* p = (uint64_t*)blank;
-    p[5] = insecure_memory_base;
+	p[5] = insecure_memory_base;
+	
 	switch (cpid) {
 		case 0x8000:
 			LOG_DEBUG("setting up stage 2 for s8000");
@@ -920,6 +930,14 @@ checkm8_stage_patch(const usb_handle_t *handle) {
 			data_sz = 0;
 			memcpy(data, payloads_yolo_t8015_bin, payloads_yolo_t8015_bin_len);
 			data_sz += payloads_yolo_t8015_bin_len;
+			break;
+		case 0x8960:
+			// yolo_s5l8960
+			LOG_DEBUG("setting up stage 2 for s5l8960");
+			data = calloc(1, payloads_yolo_s5l8960_bin_len);
+			data_sz = 0;
+			memcpy(data, payloads_yolo_s5l8960_bin, payloads_yolo_s5l8960_bin_len);
+			data_sz += payloads_yolo_s5l8960_bin_len;
 			break;
 		default:
 			LOG_ERROR("unsupported cpid 0x%" PRIX32 "", cpid);
@@ -993,27 +1011,50 @@ static void checkm8_boot_pongo(usb_handle_t *handle) {
             send_usb_control_request(handle, 0x21, DFU_DNLOAD, 0, 0, (unsigned char*)&out[len], size, &transfer_ret);
             if(transfer_ret.sz != size || transfer_ret.ret != USB_TRANSFER_OK)
             {
-				LOG_DEBUG("retrying at len = %zu", len);
+		LOG_DEBUG("retrying at len = %zu", len);
                 sleep_ms(100);
                 goto retry;
             }
             len += size;
-			LOG_DEBUG("len = %zu", len);
+	    LOG_DEBUG("len = %zu", len);
         }
 	}
 	send_usb_control_request_no_data(handle, 0x21, 4, 0, 0, 0, NULL);
 	LOG_DEBUG("pongoOS sent, should be booting");
 }
 
+#define StageType enum {\
+        STAGE_RESET,\
+        STAGE_SETUP,\
+        STAGE_SPRAY,\
+        STAGE_PATCH,\
+        STAGE_PWNED\
+    }
+
+static const char*
+gaster_checkm8_stage_to_string(int stage) {
+	StageType stage_loc = stage;
+
+	switch (stage_loc) {
+		case STAGE_RESET:
+			return "STAGE_RESET";
+		case STAGE_SETUP:
+			return "STAGE_SETUP";
+		case STAGE_SPRAY:
+			return "STAGE_SPRAY";
+		case STAGE_PATCH:
+			return "STAGE_PATCH";
+		case STAGE_PWNED:
+			return "STAGE_PWNED";
+		default:
+			// without proper lifetime guarantee from the parent, can't do sprintf
+			return "Unknown?";
+	}
+}
+
 static bool
 gaster_checkm8(usb_handle_t *handle) {
-	enum {
-		STAGE_RESET,
-		STAGE_SETUP,
-		STAGE_SPRAY,
-		STAGE_PATCH,
-		STAGE_PWNED
-	} stage = STAGE_RESET;
+	StageType stage = STAGE_RESET;
 	bool ret, pwned;
 
 	init_usb_handle(handle, APPLE_VID, DFU_MODE_PID);
@@ -1031,13 +1072,25 @@ gaster_checkm8(usb_handle_t *handle) {
 				stage = STAGE_PATCH;
 			} else {
 				LOG_INFO("Right before trigger (this is the real bug setup)");
+				// hack for A7 SoC that is opt-in
+				if (real_trigger_timeout_ms > 0) {
+					LOG_DEBUG("Waiting %d seconds", real_trigger_timeout_ms);
+					sleep_ms(real_trigger_timeout_ms);
+				}	
+				if (reset_on_real_trigger) {
+					LOG_DEBUG("Resetting USB handle on trigger");
+					reset_usb_handle(handle);
+				}
+
 				ret = checkm8_stage_patch(handle);
 				stage = STAGE_RESET;
 			}
-			if(ret) {
-				LOG_DEBUG("Stage %d succeeded", stage);
+
+			const char* st_s = gaster_checkm8_stage_to_string(stage);
+			if (ret) {
+				LOG_DEBUG("Stage %s succeeded, ret code %d", st_s, ret);
 			} else {
-				LOG_ERROR("Stage %d failed", stage);
+				LOG_ERROR("Stage %s failed, ret code %d", st_s, ret);
 				stage = STAGE_RESET;
 			}
 			reset_usb_handle(handle);
@@ -1049,15 +1102,158 @@ gaster_checkm8(usb_handle_t *handle) {
 	return stage == STAGE_PWNED;
 }
 
+static int
+stoi(const char* data, int* result) {
+	assert(result != NULL && data != NULL);
+	#define is_ws(v) v == ' ' || v == '\t' || v == '\n' || v == '\r' || v == '\v'
+
+	size_t len = strlen(data);
+	*result = 0;
+	int nega = 0;
+       	enum { START, READ, END } state = START;
+	for (int i = 0; i < len; i++) {
+		char c = data[i];
+		if (is_ws(c)) {
+			switch (state) {
+				default:
+					continue;
+				case READ:
+					state = END;
+					continue;
+			}
+		}
+
+		if (c == '-') {
+			if (state == START) {
+				nega = 1;
+				state = READ;
+			} else {
+				*result = 0;
+				return 1;
+			}
+			continue;
+		}
+
+		if (c >= '0' && c <= '9') {
+			if (state == START) {
+				state = READ;
+			} else if (state != READ) {
+				return 1;
+			}
+
+			*result = ((*result) << 3) + ((*result) << 1) + (c - '0');
+			continue;
+		}
+	
+		return 1;
+	}
+	#undef is_ws
+
+	if (nega) {
+		*result = -(*result);
+	}
+	return 0;
+}
+
+static int
+args_config(int argc, char **argv) {
+	int* arg_target = NULL; // for now, only type needed is an integer. can add type metadata bla bla
+	int help = 0;
+	enum {
+		E_NONE,
+		E_INVALID,
+		E_DUPLICATE
+	} invalid = E_NONE;
+	for (int i = 1; i < argc; i++) {
+		char* arg = argv[i];
+		if (arg_target != NULL) {
+			if (stoi(arg, arg_target)) {
+				invalid = E_INVALID;
+			}
+
+			arg_target = NULL; // unset after reading
+			continue;
+		}
+
+		if (arg[0] == '-') {
+			int dashes = 0;
+			do {
+				arg++;
+				dashes++;
+			} while (*arg == '-' && *arg != '\0');
+
+			// int libusb_reset_device(libusb_device_handle* dev_handle) b4 real bug trigger 
+			if ((dashes > 1) ? 0 == strcmp(arg, "reset-usb") : 0 == strcmp(arg, "r")) {
+				if (reset_on_real_trigger) {
+					invalid = E_DUPLICATE;
+				}
+
+				reset_on_real_trigger = 1;
+			} // sleep_ms b4 real bug trigger
+			else if ((dashes > 1) ? 0 == strcmp(arg, "timeout") : 0 == strcmp(arg, "t")) {
+				if (real_trigger_timeout_ms > 0) {
+					invalid = E_DUPLICATE;
+				} else {
+					arg_target = &real_trigger_timeout_ms; // dunno if this is safe
+				}
+			} // help (can be duped idc)
+			else if (arg[0] == 'h') {
+				help = 1;
+			} // bradar what is this
+			else {
+				invalid = E_INVALID;
+			}
+		} else {
+			int is_help = 0 == strcmp(arg, "help");
+			if (help == 0) {
+				help = is_help ? 1 : 0;
+			}
+			if (invalid == E_NONE) {
+				invalid = (is_help) ? E_NONE : E_INVALID;
+			}
+		}
+	}
+	// expected arg
+	if (invalid == E_NONE && arg_target != NULL) {
+		invalid = E_INVALID;
+	}
+
+	if (help || invalid != E_NONE) {
+		LOG_INFO(
+			"\nopenra1n help\n"
+			"  --reset-usb, -r = call libusb_reset_device before real bug trigger\n"
+			"  --timeout, -t <number> = call sleep_ms before real bug trigger\n"
+			"  --help, -h, help = display this message"
+		);
+
+		if (invalid != E_NONE) {
+			LOG_INFO("invalid arguments error %d", invalid);
+		}
+	}
+
+	return invalid;
+}
+
 int main(int argc, char **argv) {
 	LOG_RAINBOW("-=-=- openra1n -=-=-");
+
+	args_config(argc, argv);
+	// LOG_INFO("reset-usb : %d", reset_on_real_trigger);
+	// LOG_INFO("timeout : %d", real_trigger_timeout_ms);
+
 	int ret = EXIT_FAILURE;
 	usb_handle_t handle;
 	usb_timeout = 5;
 	usb_abort_timeout_min = 0;
+
 	LOG_INFO("Waiting for DFU mode device");
 	gaster_checkm8(&handle);
+
 	sleep_ms(3000);
+	LOG_INFO("Booting pongo (if succeeded)");
 	checkm8_boot_pongo(&handle);
+
+	LOG_INFO("Exiting with ret code %d", ret);
 	return ret;
 }
+
