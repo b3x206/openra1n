@@ -1098,10 +1098,10 @@ gaster_checkm8(usb_handle_t *handle) {
     return stage == STAGE_PWNED;
 }
 
+#define is_ws(v) v == ' ' || v == '\t' || v == '\n' || v == '\r' || v == '\v'
 static int
 stoi(const char* data, int* result) {
     assert(result != NULL && data != NULL);
-    #define is_ws(v) v == ' ' || v == '\t' || v == '\n' || v == '\r' || v == '\v'
 
     size_t len = strlen(data);
     *result = 0;
@@ -1143,7 +1143,6 @@ stoi(const char* data, int* result) {
     
         return 1;
     }
-    #undef is_ws
 
     if (nega) {
         *result = -(*result);
@@ -1153,14 +1152,16 @@ stoi(const char* data, int* result) {
 
 static int
 args_config(int argc, char **argv) {
+    // just could have done "getopt", but whatever
     int* arg_target = NULL; // for now, only type needed is an integer. can add type metadata bla bla
     bool help = false;
+    bool stop = false;
     enum {
         E_NONE,
         E_INVALID,
         E_DUPLICATE
     } invalid = E_NONE;
-    for (int i = 1; i < argc; i++) {
+    for (int i = 1; i < argc && !stop; i++) {
         char* arg = argv[i];
         if (arg_target != NULL) {
             if (stoi(arg, arg_target) != 0) {
@@ -1177,6 +1178,12 @@ args_config(int argc, char **argv) {
                 arg++;
                 dashes++;
             } while (*arg == '-' && *arg != '\0');
+
+            // is supposed to stop parsing after "--\s+"
+            if (is_ws(arg[0])) {
+                stop = true;
+                break;
+            }
 
             // int libusb_reset_device(libusb_device_handle* dev_handle) b4 real bug trigger 
             if ((dashes > 1) ? 0 == strcmp(arg, "reset-usb") : 0 == strcmp(arg, "r")) {
@@ -1236,6 +1243,7 @@ args_config(int argc, char **argv) {
 
     return invalid;
 }
+#undef is_ws
 
 int main(int argc, char **argv) {
     LOG_RAINBOW("-=-=- openra1n -=-=-");
