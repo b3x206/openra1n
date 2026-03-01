@@ -1216,7 +1216,7 @@ args_config(int argc, char **argv) {
             } while (*arg == '-' && *arg != '\0');
 
             // is supposed to stop parsing after "--\s+"
-            if (is_ws(arg[0])) {
+            if (dashes == 2 && (*arg == '\0' || is_ws(*arg))) {
                 stop = true;
                 break;
             }
