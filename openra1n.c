@@ -145,7 +145,7 @@ reset_usb_handle(const usb_handle_t *handle) {
     int result = libusb_reset_device(handle->device);
 
     if (result) {
-        LOG_ERROR("libusb_reset_device returned non-zero %d", result);
+        LOG_WARN("libusb_reset_device returned non-zero %d", result);
     }
 }
 
